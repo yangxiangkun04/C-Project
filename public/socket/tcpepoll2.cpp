@@ -29,7 +29,7 @@ int initserver(int port);
 
 int main(int argc,char *argv[])
 {
-    if (argc != 2) { printf("usage: ./tcpepoll2 port\n"); return -1; }
+     if (argc != 2) { printf("usage: ./tcpepoll2 port\n"); return -1; }
 
     // 初始化服务端用于监听的socket。
     int listensock = initserver(atoi(argv[1]));
@@ -46,8 +46,8 @@ int main(int argc,char *argv[])
     epoll_event ev;                 // 声明事件的数据结构。
     ev.data.fd=listensock;          // 指定事件的自定义数据，会随着epoll_wait()返回的事件一并返回。
     // ev.data.ptr=(void*)"超女";   // 指定事件的自定义数据，会随着epoll_wait()返回的事件一并返回。
-    //ev.events=EPOLLIN;              // 打算让epoll监视listensock的读事件，LT（水平）模式。
-    ev.events=EPOLLIN | EPOLLET; // 打算让epoll监视listensock的读事件，ET（边缘）模式。
+    //ev.events=EPOLLOUT;              // 打算让epoll监视listensock的读事件，LT（水平）模式。
+    ev.events=EPOLLIN | EPOLLET;      // 打算让epoll监视listensock的读事件，ET（边缘）模式。
 
     epoll_ctl(epollfd,EPOLL_CTL_ADD,listensock,&ev);     // 把需要监视的socket和事件加入epollfd中。
 
@@ -83,21 +83,21 @@ int main(int argc,char *argv[])
                     struct sockaddr_in client;
                     socklen_t len = sizeof(client);
                     int clientsock = accept(listensock,(struct sockaddr*)&client,&len);
-                    if ( (clientsock<0) && (errno==EAGAIN) ) break;
+                    if ( (clientsock<0) && (errno==EAGAIN) ) break;  // 表示已连接队列中没有socket了
 
                     printf ("accept client(socket=%d) ok.\n",clientsock);
 
                     // 为新客户端准备读事件，并添加到epoll中。
                     setnonblocking(clientsock);              // 把客户端连接的socket设置为非阻塞。
                     ev.data.fd=clientsock;
-                    // ev.events=EPOLLOUT;                       // LT-水平触发。
-                    ev.events=EPOLLOUT|EPOLLET;        // ET-边缘触发。
+                    ev.events=EPOLLOUT;                       // LT-水平触发。
+                    //ev.events=EPOLLIN|EPOLLET;        // ET-边缘触发。
                     epoll_ctl(epollfd,EPOLL_CTL_ADD,clientsock,&ev);
                 }
             }
-            else
+            else  //发生事件的是客户端的socket
             {
-                //写事件
+                // 写事件
                 printf("触发了写件事。\n");
                 for (int ii=0;ii<10000000;ii++)
                 {
@@ -105,39 +105,39 @@ int main(int argc,char *argv[])
                     {
                         if (errno==EAGAIN) 
                         { 
-                            printf("发送缓冲区已填满。\n"); break; 
+                            printf("发送缓冲区已填满 \n"); break; 
                         }
                     }
                 }
-                /*
-                //读事件
-                // 如果是客户端连接的socke有事件，表示有报文发过来或者连接已断开。
-                char buffer[1024];       // 存放从客户端读取的数据。
-                memset(buffer,0,sizeof(buffer));
-                int    readn;                 // 每次调用recv()的返回值。
-                char *ptr=buffer;        // buffer的位置指针。
-                while (true)
-                {
-                    if ( (readn=recv(evs[ii].data.fd,ptr,5,0))<=0 )  //>0表示成功读取到了数据
-                    {
-                        if ( (readn<0) && (errno==EAGAIN) ) 
-                        {   // 如果数据被读取完了，把接收到的报文内容原封不动的发回去。
-                            send(evs[ii].data.fd,buffer,strlen(buffer),0);
-                            printf("recv(eventfd=%d):%s\n",evs[ii].data.fd,buffer);
-                        }
-                        else
-                        {
-                            // 如果客户端的连接已断开。
-                            printf("client(eventfd=%d) disconnected.\n",evs[ii].data.fd);
-                            close(evs[ii].data.fd);            // 关闭客户端的socket
-                        }
 
-                        break;        // 跳出循环。
-                    }
-                    else
-                        ptr=ptr+readn;                    // buffer的位置指针后移。 
-                }
-                */
+                // 读事件
+                // 如果是客户端连接的socke有事件，表示有报文发过来或者连接已断开。
+                // char buffer[1024];       // 存放从客户端读取的数据。
+                // memset(buffer,0,sizeof(buffer));
+                // int    readn;                 // 每次调用recv()的返回值。
+                // char *ptr=buffer;        // buffer的位置指针。
+                // while (true)
+                // {
+                //     if ( (readn=recv(evs[ii].data.fd,ptr,5,0))<=0 )
+                //     {
+                //         if ( (readn<0) && (errno==EAGAIN) ) 
+                //         {   // 如果数据被读取完了，把接收到的报文内容原封不动的发回去。
+                //             send(evs[ii].data.fd,buffer,strlen(buffer),0);
+                //             printf("recv(eventfd=%d):%s\n",evs[ii].data.fd,buffer);
+                //         }
+                //         else
+                //         {
+                //             // 如果客户端的连接已断开。
+                //             printf("client(eventfd=%d) disconnected.\n",evs[ii].data.fd);
+                //             close(evs[ii].data.fd);            // 关闭客户端的socket
+                //         }
+
+                //         break;        // 跳出循环。
+                //     }
+                //     else
+                //         ptr=ptr+readn;                    // buffer的位置指针后移。 
+                // }
+            
             }
         }
     }

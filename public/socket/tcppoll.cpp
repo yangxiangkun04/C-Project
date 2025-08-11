@@ -25,6 +25,8 @@ int main(int argc,char *argv[])
     pollfd fds[2048];  // fds存放需要监视的socket。
 
     // 初始化数组，把全部的socket设置为-1，如果数组中的socket的值为-1，那么，poll将忽略它。
+    // 不能用memset，因为memset会把所有变量都进行初始化，我们仅仅想初始化fd成员
+    // poll判断一个元素是否有效，依赖的是fd>=0
     for (int ii=0;ii<2048;ii++)             
         fds[ii].fd=-1;   
 
@@ -39,6 +41,7 @@ int main(int argc,char *argv[])
     while (true)        // 事件循环。
     {
         // 调用poll() 等待事件的发生（监视哪些socket发生了事件)。
+        // 告诉poll fds数组里有多少个有效元素待检查
         int infds=poll(fds,maxfd+1,10000);      // 超时时间为10秒。
 
         // 如果infds<0，表示调用poll()失败。

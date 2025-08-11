@@ -40,6 +40,7 @@ int main(int argc,char *argv[])
     while (true)        // 事件循环。
     {
         // 等待监视的socket有事件发生。
+        // 如果epoll监视的socket有事件发生，将事件存放在evs中
         int infds=epoll_wait(epollfd,evs,10,-1);
 
         // 返回失败。

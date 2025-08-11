@@ -38,20 +38,20 @@ int main(int argc, char *argv[])
 
     for (int ii=0;ii<200000;ii++)
     {
-        /*
+        
         //服务端的读事件
         // 从命令行输入内容。
-        memset(buf,0,sizeof(buf));
-        printf("please input:"); scanf("%s",buf);
+        // memset(buf,0,sizeof(buf));
+        // printf("please input:"); scanf("%s",buf);
         // strcpy(buf,"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaabbbbbbbbbbbbbbccccccccccccccccddddddddddddd");
 
-        if (send(sockfd,buf,strlen(buf),0) <=0)
-        { 
-            printf("write() failed.\n");  close(sockfd);  return -1;
-        }
-        */
+        // if (send(sockfd,buf,strlen(buf),0) <=0)
+        // { 
+        //     printf("write() failed.\n");  close(sockfd);  return -1;
+        // }
+        
 		
-        //服务端的写事件
+        // 服务端的写事件
         memset(buf,0,sizeof(buf));
         if (recv(sockfd,buf,sizeof(buf),0) <=0) 
         { 
@@ -59,7 +59,7 @@ int main(int argc, char *argv[])
         }
 
         printf("recv:%s\n",buf);
-        usleep(1000);
+        usleep(1000); //让客户端接受报文的速度比服务端发送报文的速度慢，使服务端发送缓冲区填满
     }
 
     // printf("结束时间：%d",time(0));
