@@ -1,5 +1,5 @@
 //此程序用于演示采用epoll模型的边缘触发。
-//如果监听的socket是边缘触发模式，就一定要采用非阻塞的socket，处理事件的时候一定要用循环
+//如果监视的socket是边缘触发模式，就一定要采用非阻塞的socket，处理事件的时候一定要用循环
 
 #include <stdio.h>
 #include <unistd.h>
