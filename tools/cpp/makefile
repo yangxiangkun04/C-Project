@@ -24,7 +24,7 @@ CFLAGS = -g
 #CFLAGS = -O2
 
 all:procctl checkproc deletefiles gzipfiles ftpgetfiles ftpputfiles tcpputfiles fileserver tcpgetfiles\
-dminingoracle xmltodb deletetable migratetable syncref syncinc
+dminingoracle xmltodb deletetable migratetable syncref syncinc inetd
 #xmltodb deletetable migratetable syncref syncinc inetd rinetd rinetdin webserver
     
 
@@ -88,9 +88,9 @@ syncinc:syncinc.cpp _tools.cpp
 	g++ $(CFLAGS) -o syncinc syncinc.cpp $(PUBINCL) $(PUBCPP) $(ORAINCL)  $(ORALIB) $(ORALIBS) $(ORACPP) _tools.cpp
 	cp -f syncinc ../bin/.
 
-#inetd:inetd.cpp
-#g++ $(CFLAGS) -o inetd inetd.cpp $(PUBINCL) $(PUBCPP) 
-#cp -f inetd ../bin/.
+inetd:inetd.cpp
+	g++ $(CFLAGS) -o inetd inetd.cpp $(PUBINCL) $(PUBCPP) 
+	cp -f inetd ../bin/.
 
 #webserver:webserver.cpp
 #g++ $(CFLAGS) -o webserver webserver.cpp $(PUBINCL) $(PUBCPP) $(ORAINCL)  $(ORALIB) $(ORALIBS) $(ORACPP) -lpthread
@@ -106,6 +106,6 @@ syncinc:syncinc.cpp _tools.cpp
 
 clean:
 	rm -rf procctl checkproc deletefiles gzipfiles ftpgetfiles ftpputfiles
-	rm -rf tcpputfiles fileserver tcpgetfiles dminingoracle xmltodb deletetable migratetable syncref syncinc
+	rm -rf tcpputfiles fileserver tcpgetfiles dminingoracle xmltodb deletetable migratetable syncref syncinc inetd
 #migratetable
 #rm -rf syncref syncinc inetd rinetd rinetdin webserver

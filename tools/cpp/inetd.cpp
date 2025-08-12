@@ -6,10 +6,10 @@ using namespace idc;
 // 代理路由参数的结构体。
 struct st_route
 {
-    int    srcport;           // 源端口。
-    char dstip[31];        // 目标主机的地址。
-    int    dstport;          // 目标主机的端口。
-    int    listensock;      // 源端口监听的socket。
+    int  srcport;        // 源端口。
+    char dstip[31];      // 目标主机的地址。
+    int  dstport;        // 目标主机的端口。
+    int  listensock;     // 源端口监听的socket,监听多个端口
 }stroute;
 vector<struct st_route> vroute;       // 代理路由的容器。
 bool loadroute(const char *inifile);  // 把代理路由参数加载到vroute容器。
@@ -18,9 +18,9 @@ bool loadroute(const char *inifile);  // 把代理路由参数加载到vroute容
 int initserver(const int port);
 
 int epollfd=0;      // epoll的句柄。
-int tfd=0;             // 定时器的句柄。
+int tfd=0;          // 定时器的句柄。
 
-#define MAXSOCK  1024          // 最大连接数。
+#define MAXSOCK  1024           // 最大连接数。
 int clientsocks[MAXSOCK];       // 存放每个socket连接对端的socket的值。
 int clientatime[MAXSOCK];       // 存放每个socket连接最后一次收发报文的时间。
 
@@ -30,6 +30,7 @@ int conntodst(const char *ip,const int port);
 void EXIT(int sig);     // 进程退出函数。
 
 clogfile logfile;
+cpactive pactive; 
 
 int main(int argc,char *argv[])
 {
@@ -40,7 +41,7 @@ int main(int argc,char *argv[])
         printf("Sample:./inetd /tmp/inetd.log /etc/inetd.conf\n\n");
         printf("        /project/tools/bin/procctl 5 /project/tools/bin/inetd /tmp/inetd.log /etc/inetd.conf\n\n");
         printf("本程序的功能是正向代理，如果用到了1024以下的端口，则必须由root用户启动。\n");
-        printf("logfile 本程序运行的日是志文件。\n");
+        printf("logfile 本程序运行的日志文件。\n");
         printf("inifile 路由参数配置文件。\n");
 
         return -1;
@@ -56,6 +57,8 @@ int main(int argc,char *argv[])
     {
         printf("打开日志文件失败（%s）。\n",argv[1]); return -1;
     }
+
+    pactive.addpinfo(30,"inetd");       // 设置进程的心跳超时间为30秒。
 
     // 把代理路由参数配置文件加载到vroute容器。
     if (loadroute(argv[2])==false) return -1;
@@ -90,6 +93,32 @@ int main(int argc,char *argv[])
         epoll_ctl(epollfd,EPOLL_CTL_ADD,aa.listensock,&ev);  // 把监听的socket的事件加入epollfd中。
     }
 
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // 把定时器加入epoll。
+    int tfd=timerfd_create(CLOCK_MONOTONIC,TFD_NONBLOCK|TFD_CLOEXEC);   // 创建timerfd。
+    struct itimerspec timeout;                                // 定时时间的数据结构。
+    memset(&timeout,0,sizeof(struct itimerspec));
+    timeout.it_value.tv_sec = 10;                            // 定时时间为10秒。
+    timeout.it_value.tv_nsec = 0;
+    timerfd_settime(tfd,0,&timeout,0);                  // 开始计时。alarm(10)
+    ev.data.fd=tfd;                                                  // 为定时器准备事件。
+    ev.events=EPOLLIN;
+    epoll_ctl(epollfd,EPOLL_CTL_ADD,tfd,&ev);     // 把定时器fd加入epoll。
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // 把信号加入epoll。
+    sigset_t sigset;                                                     // 创建信号集。
+    sigemptyset(&sigset);                                         // 初始化（清空）信号集。
+    sigaddset(&sigset, SIGINT);                                // 把SIGINT信号加入信号集。
+    sigaddset(&sigset, SIGTERM);                             // 把SIGTERM信号加入信号集。
+    sigprocmask(SIG_BLOCK, &sigset, 0);                 // 对当前进程屏蔽信号集（当前程将收不到信号集中的信号）。
+    int sigfd=signalfd(-1, &sigset, 0);                       // 创建信号集的fd。
+    ev.data.fd = sigfd;                                               // 为信号集的fd准备事件。
+    ev.events = EPOLLIN;
+    epoll_ctl(epollfd,EPOLL_CTL_ADD,sigfd,&ev);     // 把信号集fd加入epoll。
+    //////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
     struct epoll_event evs[10];      // 存放epoll返回的事件。
 
     while (true)     // 进入事件循环。
@@ -106,13 +135,57 @@ int main(int argc,char *argv[])
             logfile.write("已发生事件的socket=%d\n",evs[ii].data.fd);
 
             ////////////////////////////////////////////////////////
+            // 如果定时器的时间已到，有两件事要做：1）更新进程的心跳；2）清理空闲的客户端socket，路由器也会这么做。
+            if (evs[ii].data.fd==tfd)
+            {
+                logfile.write("定时器时间已到。\n");
+
+                timerfd_settime(tfd,0,&timeout,0);       // 重新开始计时。 alarm(10)
+
+                pactive.uptatime();        // 1）更新进程心跳。
+
+                // 2）清理空闲的客户端socket。
+                for (int jj=0;jj<MAXSOCK;jj++)         // 可以把最大的socket记下来，这个循环不必遍历整个数组。
+                {
+                    // 如果客户端socket空闲的时间超过80秒就关掉它。
+                    if ( (clientsocks[jj]>0) && ((time(0)-clientatime[jj])>80) )
+                    {
+                        logfile.write("client(%d,%d) timeout。\n",clientsocks[jj],clientsocks[clientsocks[jj]]);
+                        close(clientsocks[clientsocks[jj]]);
+                        close(clientsocks[jj]);  
+                        // 把数组中对端的socket置空，这一行代码和下一行代码的顺序不能乱。
+                        clientsocks[clientsocks[jj]]=0;
+                        // 把数组中本端的socket置空，这一行代码和上一行代码的顺序不能乱。
+                        clientsocks[jj]=0;
+                    }
+                }
+
+                continue;
+            }
+            ////////////////////////////////////////////////////////
+            
+            ////////////////////////////////////////////////////////
+            // 如果收到了信号。
+            if (evs[ii].data.fd==sigfd)
+            {
+                struct signalfd_siginfo siginfo;                                                  // 信号的数据结构。
+                int s = read(sigfd, &siginfo, sizeof(struct signalfd_siginfo));    // 读取信号。
+                logfile.write("收到了信号=%d。\n",siginfo.ssi_signo); 
+
+                // 在这里编写处理信号的代码。
+
+                continue;
+            }
+            ////////////////////////////////////////////////////////
+
+            ////////////////////////////////////////////////////////
             // 如果发生事件的是listensock，表示有新的客户端连上来。
             int jj=0;
             for (jj=0;jj<vroute.size();jj++)
             {
                 if (evs[ii].data.fd==vroute[jj].listensock)     // 判断是哪个源端口有客户端连上来了。5058
                 {
-                    // 从已连接队列中获取客户端连上来的socket。 // socket是7
+                    // 从已连接队列中获取客户端连上来的socket,假设socket是7
                     struct sockaddr_in client;
                     socklen_t len = sizeof(client);
                     int srcsock = accept(vroute[jj].listensock,(struct sockaddr*)&client,&len);
@@ -133,6 +206,7 @@ int main(int argc,char *argv[])
                     logfile.write("accept on port %d,client(%d,%d) ok。\n",vroute[jj].srcport,srcsock,dstsock);
 
                     // 为新连接的两个socket准备读事件，并添加到epoll中。
+                    // 所谓的网络代理就是转发两个socket连接的报文
                     ev.data.fd=srcsock; ev.events=EPOLLIN;
                     epoll_ctl(epollfd,EPOLL_CTL_ADD,srcsock,&ev);
                     ev.data.fd=dstsock; ev.events=EPOLLIN;
