@@ -23,6 +23,7 @@ int tfd=0;          // 定时器的句柄。
 #define MAXSOCK  1024           // 最大连接数。
 int clientsocks[MAXSOCK];       // 存放每个socket连接对端的socket的值。
 int clientatime[MAXSOCK];       // 存放每个socket连接最后一次收发报文的时间。
+string clientbuffer[MAXSOCK];   // 存放每个socket发送内容的buffer
 
 // 向目标地址和端口发起socket连接。
 int conntodst(const char *ip,const int port);
@@ -30,7 +31,7 @@ int conntodst(const char *ip,const int port);
 void EXIT(int sig);     // 进程退出函数。
 
 clogfile logfile;
-cpactive pactive; 
+//cpactive pactive; 
 
 int main(int argc,char *argv[])
 {
@@ -58,7 +59,7 @@ int main(int argc,char *argv[])
         printf("打开日志文件失败（%s）。\n",argv[1]); return -1;
     }
 
-    pactive.addpinfo(30,"inetd");       // 设置进程的心跳超时间为30秒。
+    //pactive.addpinfo(30,"inetd");       // 设置进程的心跳超时间为30秒。
 
     // 把代理路由参数配置文件加载到vroute容器。
     if (loadroute(argv[2])==false) return -1;
@@ -95,28 +96,28 @@ int main(int argc,char *argv[])
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // 把定时器加入epoll。
-    int tfd=timerfd_create(CLOCK_MONOTONIC,TFD_NONBLOCK|TFD_CLOEXEC);   // 创建timerfd。
-    struct itimerspec timeout;                                // 定时时间的数据结构。
-    memset(&timeout,0,sizeof(struct itimerspec));
-    timeout.it_value.tv_sec = 10;                            // 定时时间为10秒。
-    timeout.it_value.tv_nsec = 0;
-    timerfd_settime(tfd,0,&timeout,0);                  // 开始计时。alarm(10)
-    ev.data.fd=tfd;                                                  // 为定时器准备事件。
-    ev.events=EPOLLIN;
-    epoll_ctl(epollfd,EPOLL_CTL_ADD,tfd,&ev);     // 把定时器fd加入epoll。
+    // int tfd=timerfd_create(CLOCK_MONOTONIC,TFD_NONBLOCK|TFD_CLOEXEC);   // 创建timerfd。
+    // struct itimerspec timeout;                                // 定时时间的数据结构。
+    // memset(&timeout,0,sizeof(struct itimerspec));
+    // timeout.it_value.tv_sec = 10;                            // 定时时间为10秒。
+    // timeout.it_value.tv_nsec = 0;
+    // timerfd_settime(tfd,0,&timeout,0);                  // 开始计时。alarm(10)
+    // ev.data.fd=tfd;                                                  // 为定时器准备事件。
+    // ev.events=EPOLLIN;
+    // epoll_ctl(epollfd,EPOLL_CTL_ADD,tfd,&ev);     // 把定时器fd加入epoll。
     //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     //////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // 把信号加入epoll。
-    sigset_t sigset;                                                     // 创建信号集。
-    sigemptyset(&sigset);                                         // 初始化（清空）信号集。
-    sigaddset(&sigset, SIGINT);                                // 把SIGINT信号加入信号集。
-    sigaddset(&sigset, SIGTERM);                             // 把SIGTERM信号加入信号集。
-    sigprocmask(SIG_BLOCK, &sigset, 0);                 // 对当前进程屏蔽信号集（当前程将收不到信号集中的信号）。
-    int sigfd=signalfd(-1, &sigset, 0);                       // 创建信号集的fd。
-    ev.data.fd = sigfd;                                               // 为信号集的fd准备事件。
-    ev.events = EPOLLIN;
-    epoll_ctl(epollfd,EPOLL_CTL_ADD,sigfd,&ev);     // 把信号集fd加入epoll。
+    // sigset_t sigset;                                                     // 创建信号集。
+    // sigemptyset(&sigset);                                         // 初始化（清空）信号集。
+    // sigaddset(&sigset, SIGINT);                                // 把SIGINT信号加入信号集。
+    // sigaddset(&sigset, SIGTERM);                             // 把SIGTERM信号加入信号集。
+    // sigprocmask(SIG_BLOCK, &sigset, 0);                 // 对当前进程屏蔽信号集（当前程将收不到信号集中的信号）。
+    // int sigfd=signalfd(-1, &sigset, 0);                       // 创建信号集的fd。
+    // ev.data.fd = sigfd;                                               // 为信号集的fd准备事件。
+    // ev.events = EPOLLIN;
+    // epoll_ctl(epollfd,EPOLL_CTL_ADD,sigfd,&ev);     // 把信号集fd加入epoll。
     //////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
     struct epoll_event evs[10];      // 存放epoll返回的事件。
@@ -132,50 +133,25 @@ int main(int argc,char *argv[])
         // 遍历epoll返回的已发生事件的数组evs。
         for (int ii=0;ii<infds;ii++)
         {
-            logfile.write("已发生事件的socket=%d\n",evs[ii].data.fd);
+            logfile.write("已发生事件的fd=%d(%d)\n",evs[ii].data.fd,evs[ii].events);//读事件是1，写事件是4，都有是5
 
             ////////////////////////////////////////////////////////
             // 如果定时器的时间已到，有两件事要做：1）更新进程的心跳；2）清理空闲的客户端socket，路由器也会这么做。
-            if (evs[ii].data.fd==tfd)
-            {
-                logfile.write("定时器时间已到。\n");
-
-                timerfd_settime(tfd,0,&timeout,0);       // 重新开始计时。 alarm(10)
-
-                pactive.uptatime();        // 1）更新进程心跳。
-
-                // 2）清理空闲的客户端socket。
-                for (int jj=0;jj<MAXSOCK;jj++)         // 可以把最大的socket记下来，这个循环不必遍历整个数组。
-                {
-                    // 如果客户端socket空闲的时间超过80秒就关掉它。
-                    if ( (clientsocks[jj]>0) && ((time(0)-clientatime[jj])>80) )
-                    {
-                        logfile.write("client(%d,%d) timeout。\n",clientsocks[jj],clientsocks[clientsocks[jj]]);
-                        close(clientsocks[clientsocks[jj]]);
-                        close(clientsocks[jj]);  
-                        // 把数组中对端的socket置空，这一行代码和下一行代码的顺序不能乱。
-                        clientsocks[clientsocks[jj]]=0;
-                        // 把数组中本端的socket置空，这一行代码和上一行代码的顺序不能乱。
-                        clientsocks[jj]=0;
-                    }
-                }
-
-                continue;
-            }
+           
             ////////////////////////////////////////////////////////
             
             ////////////////////////////////////////////////////////
             // 如果收到了信号。
-            if (evs[ii].data.fd==sigfd)
-            {
-                struct signalfd_siginfo siginfo;                                                  // 信号的数据结构。
-                int s = read(sigfd, &siginfo, sizeof(struct signalfd_siginfo));    // 读取信号。
-                logfile.write("收到了信号=%d。\n",siginfo.ssi_signo); 
+            // if (evs[ii].data.fd==sigfd)
+            // {
+            //     struct signalfd_siginfo siginfo;                                                  // 信号的数据结构。
+            //     int s = read(sigfd, &siginfo, sizeof(struct signalfd_siginfo));    // 读取信号。
+            //     logfile.write("收到了信号=%d。\n",siginfo.ssi_signo); 
 
-                // 在这里编写处理信号的代码。
+            //     // 在这里编写处理信号的代码。
 
-                continue;
-            }
+            //     continue;
+            // }
             ////////////////////////////////////////////////////////
 
             ////////////////////////////////////////////////////////
@@ -225,31 +201,66 @@ int main(int argc,char *argv[])
             ////////////////////////////////////////////////////////
 
             ////////////////////////////////////////////////////////
-            // 如果是客户端连接的socke有事件，表示有报文发过来或者连接已断开。
-      
-            char buffer[5000];     // 存放从接收缓冲区中读取的数据。
-            int    buflen=0;          // 从接收缓冲区中读取的数据的大小。
+            // 如果是客户端连接的socket有事件，表示有报文发过来或者连接已断开。
 
-            // 从通道的一端读取数据。
-            if ( (buflen=recv(evs[ii].data.fd,buffer,sizeof(buffer),0)) <= 0 )
+            // 如果从通道一端的socket读取到了数据，把数据存放在对端socket的缓冲区中
+            // evs[ii].events==EPOLLIN，不要这么写，读事件是1，写事件是4，都有是5
+            if(evs[ii].events&EPOLLIN)
             {
-                // 如果连接已断开，需要关闭通道两端的socket。
-                logfile.write("client(%d,%d) disconnected。\n",evs[ii].data.fd,clientsocks[evs[ii].data.fd]);
-                close(evs[ii].data.fd);                                         // 关闭客户端的连接。
-                close(clientsocks[evs[ii].data.fd]);                     // 关闭客户端对端的连接。
-                clientsocks[clientsocks[evs[ii].data.fd]]=0;       // 把数组中对端的socket置空，这一行代码和下一行代码的顺序不能乱。
-                clientsocks[evs[ii].data.fd]=0;                           // 把数组中本端的socket置空，这一行代码和上一行代码的顺序不能乱。
+                char buffer[5000];     // 存放从接收缓冲区中读取的数据。
+                int  buflen=0;         // 从接收缓冲区中读取的数据的大小。
 
-                continue;
+                // 从通道的一端读取数据。
+                if ( (buflen=recv(evs[ii].data.fd,buffer,sizeof(buffer),0)) <= 0 )
+                {
+                    // 如果连接已断开，需要关闭通道两端的socket。
+                    logfile.write("client(%d,%d) disconnected。\n",evs[ii].data.fd,clientsocks[evs[ii].data.fd]);
+                    close(evs[ii].data.fd);                                         // 关闭客户端的连接。
+                    close(clientsocks[evs[ii].data.fd]);                     // 关闭客户端对端的连接。
+                    clientsocks[clientsocks[evs[ii].data.fd]]=0;       // 把数组中对端的socket置空，这一行代码和下一行代码的顺序不能乱。
+                    clientsocks[evs[ii].data.fd]=0;                           // 把数组中本端的socket置空，这一行代码和上一行代码的顺序不能乱。
+
+                    continue;
+                }
+        
+                // 成功的读取到了数据，把接收到的报文内容原封不动的发给通道的对端。
+                //logfile.write("from %d to %d,%d bytes。\n",evs[ii].data.fd,clientsocks[evs[ii].data.fd],buflen);
+                //send(clientsocks[evs[ii].data.fd],buffer,buflen,0);
+                
+                logfile.write("from %d,%d bytes\n",evs[ii].data.fd,buflen);
+
+                //把读取到的数据追加到对端socket的buffer中
+                clientbuffer[clientsocks[evs[ii].data.fd]].append(buffer,buflen);
+
+                // 修改对端socket的事件，增加写事件
+                ev.data.fd=clientsocks[evs[ii].data.fd];
+                ev.events=EPOLLIN|EPOLLOUT;
+                epoll_ctl(epollfd,EPOLL_CTL_MOD,ev.data.fd,&ev);
+
+                // 更新通道两端socket的活动时间。
+                clientatime[evs[ii].data.fd]=time(0); 
+                clientatime[clientsocks[evs[ii].data.fd]]=time(0);  
             }
-      
-            // 成功的读取到了数据，把接收到的报文内容原封不动的发给通道的对端。
-            logfile.write("from %d to %d,%d bytes。\n",evs[ii].data.fd,clientsocks[evs[ii].data.fd],buflen);
-            send(clientsocks[evs[ii].data.fd],buffer,buflen,0);
 
-            // 更新通道两端socket的活动时间。
-            clientatime[evs[ii].data.fd]=time(0); 
-            clientatime[clientsocks[evs[ii].data.fd]]=time(0);  
+            // 判断客户端的socket是否有写事件（发送缓冲区没有满）
+            if(evs[ii].events&EPOLLOUT)
+            {
+                //把socket缓冲区中的数据发生出去
+                int writen=send(evs[ii].data.fd,clientbuffer[evs[ii].data.fd].data(),clientbuffer[evs[ii].data.fd].length(),0);
+
+                logfile.write("to %d,%d bytes\n",evs[ii].data.fd,writen);
+
+                //删除socket缓冲区中已成功发送的数据
+                clientbuffer[evs[ii].data.fd].erase(0,writen);
+
+                //如果socket缓冲区中没有数据了，不再关心socket的写事件
+                if(clientbuffer[evs[ii].data.fd].length()==0)
+                {
+                    ev.data.fd=evs[ii].data.fd;
+                    ev.events=EPOLLIN;
+                    epoll_ctl(epollfd,EPOLL_CTL_MOD,ev.data.fd,&ev);
+                }
+            }
         }
     }
 
