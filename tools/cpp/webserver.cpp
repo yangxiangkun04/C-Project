@@ -1,8 +1,7 @@
-/*
- * 程序名：webserver.cpp，数据访问接口模块。
- * 作者：吴从周
-*/
+//程序名：webserver.cpp，数据访问接口模块。
+
 #include "_public.h"
+#include "_ooci.h"
 using namespace idc;
 
 void EXIT(int sig);     // 进程退出函数。
@@ -12,11 +11,15 @@ clogfile logfile;         // 本程序运行的日志。
 // 初始化服务端的监听端口。
 int initserver(const int port);
 
+// 从GET请求中获取参数的值：strget-GET请求报文的内容；name-参数名；value-参数值。
+bool getvalue(const string &strget,const string &name,string &value);
+
 struct st_client                   // 客户端的结构体。
 {
+    string clientip;                // 客户端的ip地址。
     int      clientatime=0;     // 客户端最后一次活动的时间。
-    string recvbuffer;          // 客户端的接收缓冲区。
-    string sendbuffer;         // 客户端的发送缓冲区。
+    string recvbuffer;           // 客户端的接收缓冲区。
+    string sendbuffer;          // 客户端的发送缓冲区。
 };
 
 // 接收/发送队列的结构体。
@@ -25,6 +28,7 @@ struct st_recvmesg
     int      sock=0;               // 客户端的socket。
     string message;            // 接收/发送的报文。
 
+    // 将报文放入队列的时候会调用一次
     st_recvmesg(int in_sock,string &in_message):sock(in_sock),message(in_message){ logfile.write("构造了报文。\n");}
 };
 
@@ -102,6 +106,9 @@ public:
 
                     logfile.write("接收线程：accept client(socket=%d) ok.\n",clientsock);
 
+                    clientmap[clientsock].clientip=inet_ntoa(client.sin_addr);    // 保存客户端的ip地址。
+                    clientmap[clientsock].clientatime=time(0);                           // 客户端的活动时间。
+
                     // 为新的客户端连接准备读事件，并添加到epoll中。
                     ev.data.fd=clientsock;
                     ev.events=EPOLLIN;
@@ -159,6 +166,15 @@ public:
 
                          clientmap[evs[ii].data.fd].recvbuffer.clear();  // 清空socket的recvbuffer。
                     }
+                    else
+                    {
+                        if (clientmap[evs[ii].data.fd].recvbuffer.size()>1000)
+                        {
+                            close(evs[ii].data.fd);                      // 关闭客户端的连接。
+                            clientmap.erase(evs[ii].data.fd);     // 从状态机中删除客户端。
+                            // 可以考虑增加把客户端的ip加入黑名单。
+                        }
+                    }
 
                     clientmap[evs[ii].data.fd].clientatime=time(0);   // 更新客户端的活动时间
                 }
@@ -175,7 +191,7 @@ public:
 
         // 把接收报文对象扔到接收队列中。
         // 队列中的元素是智能指针，不是结构体，如果是结构体会发生内存拷贝
-        m_rq.push(ptr);                  
+        m_rq.push(ptr);                   
 
         m_cond_rq.notify_one();     // 通知工作线程处理接收队列中的报文。
     }
@@ -184,6 +200,13 @@ public:
     // 代码逻辑是生产消费者模型中的消费者
     void workfunc(int id)       
     {
+        connection conn;
+
+        if (conn.connecttodb("idc/idcpwd@snorcl11g_138","AMERICAN_AMERICA.AL32UTF8")!=0)
+        {
+            logfile.write("connect database(idc/idcpwd@snorcl11g_138) failed.\n%s\n",conn.message()); return;
+        }
+
         while (true)
         {
             shared_ptr<st_recvmesg> ptr;
@@ -205,17 +228,157 @@ public:
             }
 
             // 处理出队的元素，即客户端的请求报文。
-            logfile.write("工作线程（%d）：sock=%d,mesg=%s\n",id,ptr->sock,ptr->message.c_str());
+            logfile.write("工作线程（%d）请求：sock=%d,mesg=%s\n",id,ptr->sock,ptr->message.c_str());
 
             /////////////////////////////////////////////////////////////
             // 在这里增加处理客户端请求报文的代码（解析请求报文、判断权限、执行查询数据的SQL语句、生成响应报文）。
-            ptr->message=ptr->message + "ok.";
+            string sendbuf;
+            bizmain(conn,ptr->message,sendbuf);
+            string message=sformat(
+                "HTTP/1.1 200 OK\r\n"
+                "Server: webserver\r\n"
+                "Content-Type: text/html;charset=utf-8\r\n")+sformat("Content-Length:%d\r\n\r\n",sendbuf.size())+sendbuf;
             /////////////////////////////////////////////////////////////
 
+            logfile.write("工作线程（%d）回应：sock=%d,mesg=%s\n",id,ptr->sock,message.c_str());
+
             // 把客户端的socket和响应报文放入发送队列。
-            insq(ptr->sock,ptr->message);    
+            insq(ptr->sock,message);    
         }
     }
+
+    // 处理客户端的请求报文，生成响应报文。
+    // conn-数据库连接；recvbuf-http请求报文；sendbuf-http响应报文的数据部分，不包括状态行和头部信息。
+    void bizmain(connection &conn,const string & recvbuf,string & sendbuf)
+    {
+        string username,passwd,intername;
+
+        getvalue(recvbuf,"username",username);    // 解析用户名。
+        getvalue(recvbuf,"passwd",passwd);            // 解析密码。
+        getvalue(recvbuf,"intername",intername);   // 解析接口名。
+
+        // 1）验证用户名和密码是否正确。
+        sqlstatement stmt(&conn);
+        stmt.prepare("select ip from T_USERINFO where username=:1 and passwd=:2 and rsts=1");
+        string ip;
+        stmt.bindin(1,username);
+        stmt.bindin(2,passwd);
+        stmt.bindout(1,ip,50);
+        stmt.execute();
+        if (stmt.next()!=0)
+        {
+            sendbuf="<retcode>-1</retcode><message>用户名或密码不正确。</message>";   return;
+        }
+
+        // 2）判断客户连上来的地址是否在绑定ip地址的列表中。
+        if (ip.empty()==false)
+        {
+            // 略去十万八千行代码。
+        }
+        
+       // 3）判断用户是否有访问接口的权限。
+        stmt.prepare("select count(*) from T_USERANDINTER "
+                              "where username=:1 and intername=:2 and intername in (select intername from T_INTERCFG where rsts=1)");
+        stmt.bindin(1,username);
+        stmt.bindin(2,intername);
+        int icount=0;
+        stmt.bindout(1,icount);
+        stmt.execute();
+        stmt.next();
+        if (icount==0)
+        {
+            sendbuf="<retcode>-1</retcode><message>用户无权限，或接口不存在。</message>"; return;
+        }
+
+        // 4）根据接口名，获取接口的配置参数。
+        // 从接口参数配置表T_INTERCFG中加载接口参数。
+        string selectsql,colstr,bindin; 
+        stmt.prepare("select selectsql,colstr,bindin from T_INTERCFG where intername=:1");
+        stmt.bindin(1,intername);           // 接口名。
+        stmt.bindout(1,selectsql,1000);  // 接口SQL。
+        stmt.bindout(2,colstr,300);         // 输出列名。
+        stmt.bindout(3,bindin,300);       // 接口参数。
+        stmt.execute();                           // 这里基本上不用判断返回值，出错的可能几乎没有。
+        if (stmt.next()!=0)
+        {
+            sendbuf="<retcode>-1</retcode><message>内部错误。</message>"; return;
+        }
+
+        // http://192.168.174.132:8080?username=ty&passwd=typwd&intername=getzhobtmind3&
+        // obtid=59287&begintime=20211024094318&endtime=20211024113920
+        // SQL语句：   select obtid,to_char(ddatetime,'yyyymmddhh24miss'),t,p,u,wd,wf,r,vis from T_ZHOBTMIND 
+        //                     where obtid=:1 and ddatetime>=to_date(:2,'yyyymmddhh24miss') and ddatetime<=to_date(:3,'yyyymmddhh24miss')
+        // colstr字段： obtid,ddatetime,t,p,u,wd,wf,r,vis
+        // bindin字段：obtid,begintime,endtime
+
+        // 5）准备查询数据的SQL语句。
+        stmt.prepare(selectsql);
+
+        //////////////////////////////////////////////////
+        // 根据接口配置中的参数列表（bindin字段），从请求报文中解析出参数的值，绑定到查询数据的SQL语句中。
+        // 拆分输入参数bindin。
+        ccmdstr cmdstr;
+        cmdstr.splittocmd(bindin,",");
+
+        // 声明用于存放输入参数的数组。
+        vector<string> invalue;
+        invalue.resize(cmdstr.size());
+
+        // 从http的GET请求报文中解析出输入参数，绑定到sql中。
+        for (int ii=0;ii<cmdstr.size();ii++)
+        {
+            getvalue(recvbuf,cmdstr[ii].c_str(),invalue[ii]);
+            stmt.bindin(ii+1,invalue[ii]);
+        }
+        //////////////////////////////////////////////////
+
+        //////////////////////////////////////////////////
+        // 绑定查询数据的SQL语句的输出变量。
+        // 拆分colstr，可以得到结果集的字段数。
+        cmdstr.splittocmd(colstr,",");
+
+        // 用于存放结果集的数组。
+        vector<string> colvalue;
+        colvalue.resize(cmdstr.size());
+
+        // 把结果集绑定到colvalue数组。
+        for (int ii=0;ii<cmdstr.size();ii++)
+            stmt.bindout(ii+1,colvalue[ii]);
+        //////////////////////////////////////////////////
+
+        if (stmt.execute() != 0)
+        {
+            logfile.write("stmt.execute() failed.\n%s\n%s\n",stmt.sql(),stmt.message()); 
+            sformat(sendbuf,"<retcode>%d</retcode><message>%s</message>\n",stmt.rc(),stmt.message());
+            return;
+        }
+
+        sendbuf="<retcode>0</retcode><message>ok</message>\n";
+
+        sendbuf=sendbuf+"<data>\n";           // xml内容开始的标签<data>。
+
+        //////////////////////////////////////////////////
+        // 获取结果集，每获取一条记录，拼接xml。
+        while (true)
+        {
+            if (stmt.next() != 0) break;            // 从结果集中取一条记录。
+
+            // 拼接每个字段的xml。
+            for (int ii=0;ii<cmdstr.size();ii++)
+                sendbuf=sendbuf+sformat("<%s>%s</%s>",cmdstr[ii].c_str(),colvalue[ii].c_str(),cmdstr[ii].c_str());
+
+            sendbuf=sendbuf+"<endl/>\n";    // 每行结束的标志。
+
+        }       
+        //////////////////////////////////////////////////
+
+        sendbuf=sendbuf+"</data>\n";        // xml内容结尾的标签</data>。
+
+        logfile.write("intername=%s,count=%d\n",intername.c_str(),stmt.rpc());
+
+        // 写接口调用日志表T_USERLOG，略去十万八千行代码。
+    }
+
 
     // 把客户端的socket和响应报文放入发送队列，sock-客户端的socket，message-客户端的响应报文。
     void insq(int sock,string &message)              
@@ -400,11 +563,39 @@ int initserver(const int port)
 
 void EXIT(int sig)
 {
+    signal(sig,SIG_IGN);
+
     logfile.write("程序退出，sig=%d。\n\n",sig);
 
     write(aa.m_recvpipe[1],(char*)"o",1);   // 通知接收线程退出。
 
-    sleep(1);    // 让线程们有足够的时间退出。
+    usleep(500);    // 让线程们有足够的时间退出。
 
     exit(0);
+}
+
+
+// 从GET请求中获取参数的值：strget-GET请求报文的内容；name-参数名；value-参数值；len-参数值的长度。
+bool getvalue(const string &strget,const string &name,string &value)
+{
+    // http://192.168.150.128:8080/api?username=wucz&passwd=wuczpwd
+    // GET /api?username=wucz&passwd=wuczpwd HTTP/1.1
+    // Host: 192.168.150.128:8080
+    // Connection: keep-alive
+    // Upgrade-Insecure-Requests: 1
+    // .......
+
+    int startp=strget.find(name);                                          // 在请求行中查找参数名的位置。
+
+    if (startp==string::npos) return false; 
+
+    int endp=strget.find("&",startp);                                    // 从参数名的位置开始，查找&符号。
+    if (endp==string::npos) endp=strget.find(" ",startp);     // 如果是最后一个参数，没有找到&符号，那就查找空格。
+
+    if (endp==string::npos) return false;
+
+    // 从请求行中截取参数的值。
+    value=strget.substr(startp+(name.length()+1),endp-startp-(name.length()+1));
+
+    return true;
 }
