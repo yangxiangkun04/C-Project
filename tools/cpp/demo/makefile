@@ -1,4 +1,4 @@
-all:demo01 demo02 demo03 demo04 demo05 demo06 demo07 demo08 demo09 demo10 server client server1 server2
+all:demo01 demo02 demo03 demo04 demo05 demo06 demo07 demo08 demo09 demo10 client server1 server2
 
 demo01:demo01.cpp
 	g++ -g -o demo01 demo01.cpp -I/project/public /project/public/_public.cpp
@@ -30,8 +30,8 @@ demo09:demo09.cpp
 demo10:demo10.cpp
 	g++ -g -o demo10 demo10.cpp -I/project/public /project/public/_public.cpp
 
-server:server.cpp
-	g++ -g -o server server.cpp -I/project/public /project/public/_public.cpp
+#server:server.cpp
+#g++ -g -o server server.cpp -I/project/public /project/public/_public.cpp
 
 client:client.cpp
 	g++ -g -o client client.cpp -I/project/public /project/public/_public.cpp
@@ -44,5 +44,5 @@ server2:server2.cpp
 
 
 clean:
-	rm -f demo01 demo02 demo03 demo04 demo05 demo06 demo07 demo08 demo09 demo10 server client server1 server2
+	rm -f demo01 demo02 demo03 demo04 demo05 demo06 demo07 demo08 demo09 demo10 client server1 server2
 
